@@ -14,7 +14,7 @@ import { clampDeskSize, clampItemDimension } from '../../shared/layoutRules'
 import { moveCanvasItem, rotateCanvasItem } from '../canvas/canvasViewModel'
 import { createMaterialDraft } from '../materials/materialsViewModel'
 import { inspectPlan } from '../inspection/inspectionViewModel'
-import { LocalWorkspaceRepository, type WorkspaceRepository } from './workspaceRepository'
+import { LocalWorkspaceRepository, StorageConflictError, type WorkspaceRepository } from './workspaceRepository'
 
 export interface WorkspaceViewModel {
   status: WorkspaceStatus
@@ -53,12 +53,34 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
 
   useEffect(() => {
     let active = true
-    void repositoryRef.current.load().then((loaded) => {
+    void repositoryRef.current.load().then((result) => {
       if (!active) return
-      const nextDocument = loaded ?? createInitialDocument()
-      setDocument(nextDocument)
-      setStatus('ready')
-      setFeedback(loaded ? '已恢复上次编辑状态' : '已创建示例工作台，可以直接拖动设备')
+      const { document: loaded, notice } = result
+      setDocument(loaded ?? createInitialDocument())
+      switch (notice.kind) {
+        case 'ok':
+          setStatus('ready')
+          setFeedback('已恢复上次编辑状态')
+          break
+        case 'empty':
+          setStatus('ready')
+          setFeedback('已创建示例工作台，可以直接拖动设备')
+          break
+        case 'restored-from-backup': {
+          setStatus('ready')
+          const time = notice.savedAt ? `（备份时间 ${new Date(notice.savedAt).toLocaleString()}）` : ''
+          setFeedback(`主存储中没有可用数据，已从备份恢复${time}；如果内容偏旧，请确认是否清理过浏览器数据`)
+          break
+        }
+        case 'backup-unavailable':
+          setStatus('ready')
+          setFeedback('已恢复上次编辑状态，但备份存储不可用，修改将只保存到主存储')
+          break
+        case 'unreadable':
+          setStatus('error')
+          setFeedback('本地数据读取失败，当前使用临时工作台，修改可能无法保存')
+          break
+      }
     }).catch(() => {
       if (!active) return
       setDocument(createInitialDocument())
@@ -81,11 +103,18 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
     setStatus('saving')
     setFeedback(message)
     try {
-      await repositoryRef.current.save(nextDocument)
+      const result = await repositoryRef.current.save(nextDocument)
       setStatus('ready')
-    } catch {
+      if (!result.primaryOk) {
+        setFeedback('主存储写入失败，修改只保存到了备份存储，下次启动时会自动同步')
+      } else if (!result.backupOk) {
+        setFeedback('修改已保存到主存储，但备份存储不可用')
+      }
+    } catch (error) {
       setStatus('error')
-      setFeedback('自动保存失败，请检查浏览器本地存储权限')
+      setFeedback(error instanceof StorageConflictError
+        ? '检测到浏览器中存在更新的存档，为避免旧数据覆盖新数据，本次修改未保存，请刷新页面加载最新版本'
+        : '自动保存失败，请检查浏览器本地存储权限')
     }
   }, [])
 

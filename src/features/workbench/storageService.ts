@@ -4,31 +4,95 @@ export const STORAGE_KEY = 'focusdesk.document.v1'
 const DATABASE_NAME = 'focusdesk-db'
 const STORE_NAME = 'workspace'
 
-export interface StorageService {
+export interface StorageBackend {
   read(): Promise<string | null>
   write(value: string): Promise<void>
 }
 
-export class BrowserStorageService implements StorageService {
+export interface StorageSnapshot {
+  primary: string | null
+  backup: string | null
+  primaryError: boolean
+  backupError: boolean
+}
+
+export interface WriteOutcome {
+  primaryOk: boolean
+  backupOk: boolean
+}
+
+export interface StorageService {
+  read(): Promise<StorageSnapshot>
+  write(value: string): Promise<WriteOutcome>
+}
+
+export class IndexedDbBackend implements StorageBackend {
   async read(): Promise<string | null> {
+    const database = await openDatabase()
     try {
-      const database = await openDatabase()
       const value = await readFromDatabase(database)
+      return typeof value === 'string' ? value : null
+    } finally {
       database.close()
-      return typeof value === 'string' ? value : window.localStorage.getItem(STORAGE_KEY)
-    } catch {
-      return window.localStorage.getItem(STORAGE_KEY)
     }
   }
 
   async write(value: string): Promise<void> {
+    const database = await openDatabase()
     try {
-      const database = await openDatabase()
       await writeToDatabase(database, value)
+    } finally {
       database.close()
-    } catch {
-      window.localStorage.setItem(STORAGE_KEY, value)
     }
+  }
+}
+
+export class LocalStorageBackend implements StorageBackend {
+  async read(): Promise<string | null> {
+    return window.localStorage.getItem(STORAGE_KEY)
+  }
+
+  async write(value: string): Promise<void> {
+    window.localStorage.setItem(STORAGE_KEY, value)
+  }
+}
+
+export class BrowserStorageService implements StorageService {
+  constructor(
+    private readonly primary: StorageBackend = new IndexedDbBackend(),
+    private readonly backup: StorageBackend = new LocalStorageBackend(),
+  ) {}
+
+  async read(): Promise<StorageSnapshot> {
+    const [primary, backup] = await Promise.all([attemptRead(this.primary), attemptRead(this.backup)])
+    return {
+      primary: primary.value,
+      backup: backup.value,
+      primaryError: primary.error,
+      backupError: backup.error,
+    }
+  }
+
+  async write(value: string): Promise<WriteOutcome> {
+    const [primaryOk, backupOk] = await Promise.all([attemptWrite(this.primary, value), attemptWrite(this.backup, value)])
+    return { primaryOk, backupOk }
+  }
+}
+
+async function attemptRead(backend: StorageBackend): Promise<{ value: string | null; error: boolean }> {
+  try {
+    return { value: await backend.read(), error: false }
+  } catch {
+    return { value: null, error: true }
+  }
+}
+
+async function attemptWrite(backend: StorageBackend, value: string): Promise<boolean> {
+  try {
+    await backend.write(value)
+    return true
+  } catch {
+    return false
   }
 }
 
