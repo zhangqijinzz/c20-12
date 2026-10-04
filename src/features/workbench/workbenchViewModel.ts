@@ -14,7 +14,7 @@ import { clampDeskSize, clampItemDimension } from '../../shared/layoutRules'
 import { moveCanvasItem, rotateCanvasItem } from '../canvas/canvasViewModel'
 import { createMaterialDraft } from '../materials/materialsViewModel'
 import { inspectPlan } from '../inspection/inspectionViewModel'
-import { LocalWorkspaceRepository, type WorkspaceRepository } from './workspaceRepository'
+import { LocalWorkspaceRepository, type LoadResult, type WorkspaceRepository } from './workspaceRepository'
 
 export interface WorkspaceViewModel {
   status: WorkspaceStatus
@@ -55,17 +55,49 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
     let active = true
     void repositoryRef.current.load().then((loaded) => {
       if (!active) return
-      const nextDocument = loaded ?? createInitialDocument()
-      setDocument(nextDocument)
-      setStatus('ready')
-      setFeedback(loaded ? '已恢复上次编辑状态' : '已创建示例工作台，可以直接拖动设备')
+      applyLoadResult(loaded)
     }).catch(() => {
       if (!active) return
       setDocument(createInitialDocument())
       setStatus('error')
-      setFeedback('本地数据读取失败，当前使用临时工作台')
+      setFeedback('本地数据读取失败，当前使用临时工作台；为避免旧数据覆盖新数据，本次内容不会自动保存')
     })
     return () => { active = false }
+
+    function applyLoadResult(loaded: LoadResult) {
+      switch (loaded.outcome) {
+        case 'synced':
+          setDocument(loaded.document)
+          setStatus('ready')
+          setFeedback('已恢复上次编辑状态，两处本地存储一致')
+          break
+        case 'reconciled':
+          setDocument(loaded.document)
+          setStatus('warning')
+          setFeedback(loaded.detail.join('；'))
+          break
+        case 'conflict':
+          setDocument(loaded.document)
+          setStatus('warning')
+          setFeedback(loaded.detail.join('；'))
+          break
+        case 'recovered':
+          setDocument(loaded.document)
+          setStatus('warning')
+          setFeedback(loaded.detail.join('；'))
+          break
+        case 'empty':
+          setDocument(createInitialDocument())
+          setStatus('ready')
+          setFeedback('未发现历史方案，已创建示例工作台，可以直接拖动设备')
+          break
+        case 'unavailable':
+          setDocument(createInitialDocument())
+          setStatus('error')
+          setFeedback(`${loaded.detail.join('；')}`)
+          break
+      }
+    }
   }, [])
 
   const activePlan = useMemo(
@@ -81,11 +113,19 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
     setStatus('saving')
     setFeedback(message)
     try {
-      await repositoryRef.current.save(nextDocument)
-      setStatus('ready')
+      const failedLocations = await repositoryRef.current.save(nextDocument)
+      if (failedLocations.length === 0) {
+        setStatus('ready')
+        setFeedback(message)
+      } else {
+        // 只写进了一处时必须告警：另一处仍是旧副本，下次启动可能读到旧版。
+        setStatus('warning')
+        const names = failedLocations.map((location) => location === 'indexeddb' ? '本地数据库' : '浏览器本地缓存').join('、')
+        setFeedback(`${message}，但${names}暂时无法写入；两处备份不一致，请勿清理浏览器数据，并检查存储权限`)
+      }
     } catch {
       setStatus('error')
-      setFeedback('自动保存失败，请检查浏览器本地存储权限')
+      setFeedback('自动保存失败，两处本地存储都无法写入，请检查浏览器本地存储权限')
     }
   }, [])
 

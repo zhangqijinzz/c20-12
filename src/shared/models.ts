@@ -1,6 +1,6 @@
 export type DeviceType = 'monitor' | 'keyboard' | 'lamp' | 'speaker' | 'stand'
 
-export type WorkspaceStatus = 'loading' | 'ready' | 'saving' | 'error'
+export type WorkspaceStatus = 'loading' | 'ready' | 'saving' | 'warning' | 'error'
 
 export interface DeskItem {
   id: string
@@ -25,6 +25,9 @@ export interface WorkspaceDocument {
   version: 1
   plans: WorkspacePlan[]
   activePlanId: string
+  // 文档级时间戳：每次保存都会刷新，用于两处本地存储之间判断谁更新。
+  // 旧版本数据可能没有这个字段，此时以各方案 updatedAt 的最大值为准。
+  updatedAt?: string
 }
 
 export interface ItemBounds {
@@ -108,5 +111,10 @@ export function createPlan(name = '我的工作台', withDemo = true): Workspace
 
 export function createInitialDocument(): WorkspaceDocument {
   const plan = createPlan('我的工作台', true)
-  return { version: 1, plans: [plan], activePlanId: plan.id }
+  return { version: 1, plans: [plan], activePlanId: plan.id, updatedAt: plan.updatedAt }
+}
+
+// 每次持久化前刷新文档时间戳，保证“只切换方案”这类不改动方案内容的操作也能被识别为新版本。
+export function touchDocument(document: WorkspaceDocument): WorkspaceDocument {
+  return { ...document, updatedAt: new Date().toISOString() }
 }
